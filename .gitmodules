@@ -1,0 +1,9 @@
+[submodule "cah"]
+	path = cah
+	url = git@github.com:David96/cards_against_humanity.git
+[submodule "codenames"]
+	path = codenames
+	url = git@github.com:David96/codenames.git
+[submodule "wizard"]
+	path = wizard
+	url = git@github.com:David96/wizard.git
