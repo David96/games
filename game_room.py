@@ -54,6 +54,12 @@ class GameRoom:
             if data:
                 await self.users[sender_name].send(data)
 
+    async def run_action(self, action, name, data, socket):
+        try:
+            await action(name, data)
+        except Exception as e:
+            await self.send_error(socket, str(e))
+            traceback.print_exc()
 
     async def on_message(self, name, message):
         socket = self.users[name]
@@ -63,13 +69,8 @@ class GameRoom:
             await self.send_error(socket, str(e))
             return
         if data['action'] in self.game.ACTIONS:
-            try:
-                action = self.game.ACTIONS[data['action']]
-                await action(name, data)
-
-            except Exception as e:
-                await self.send_error(socket, str(e))
-                traceback.print_exc()
+            action = self.game.ACTIONS[data['action']]
+            asyncio.ensure_future(self.run_action(action, name, data, socket))
         else:
             await self.send_error(socket, '%s is not a valid action!' % data['action'],
                                   'invalid_action')
