@@ -25,7 +25,7 @@ async def serve(websocket, path):
         await wizard.leave(name)
 
 
-start_server = websockets.serve(serve, "localhost", 6790)
+start_server = websockets.serve(serve, "localhost", 6791)
 
 asyncio.get_event_loop().run_until_complete(start_server)
 asyncio.get_event_loop().run_forever()
