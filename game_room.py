@@ -12,9 +12,10 @@ class Event:
 class GameRoom:
 
     def __init__(self, game):
-        game.init(self)
-        self.game = game
+        self.game = game(self)
         self.users = {}
+        self.creator = None
+        self.started = False
 
     async def send_error(self, socket, message, error_type=''):
         await socket.send(json.dumps({'type': 'error', 'error': error_type, 'msg': message}))
@@ -27,17 +28,23 @@ class GameRoom:
     async def join(self, name, socket):
         if name in self.users:
             return False
+        if not self.users:
+            self.creator = name
+            await socket.send(json.dumps({'type': 'rights', 'status': 'creator'}))
         self.users[name] = socket
-        events = self.game.add_player(name)
-        for event in events:
-            await self.fire_event(name, event)
+        allowed = await self.game.add_player(name)
+        if not allowed:
+            return False
         await self.send_message('%s joined the game!' % name)
         return True
 
     async def leave(self, name):
-        self.game.remove_player(name)
-        await self.send_message('%s left the game!' % name)
         del self.users[name]
+        if self.creator == name:
+            self.creator = list(self.users.keys())[0]
+            await self.users[self.creator].send(json.dumps({'type': 'rights', 'status': 'creator'}))
+        await self.game.remove_player(name)
+        await self.send_message('%s left the game!' % name)
 
     async def fire_event(self, sender_name, event):
         if not event.per_user or not event.notify_all:
@@ -68,7 +75,15 @@ class GameRoom:
         except Exception as e:
             await self.send_error(socket, str(e))
             return
-        if data['action'] in self.game.ACTIONS:
+        if not self.started:
+            if data['action'] != 'start_game':
+                await self.send_error(socket, 'You can\'t do shit without starting the game first!')
+            elif name != self.creator:
+                await self.send_error(socket, 'That\'s not your job to do!')
+            else:
+                self.started = True
+                await self.game.start_game()
+        elif data['action'] in self.game.ACTIONS:
             action = self.game.ACTIONS[data['action']]
             asyncio.ensure_future(self.run_action(action, name, data, socket))
         else:

@@ -5,7 +5,7 @@ import websockets
 from game_room import GameRoom
 from wizard.wizard import Wizard
 
-wizard = GameRoom(Wizard())
+wizard = GameRoom(Wizard)
 
 async def serve(websocket, path):
     name = None
@@ -17,7 +17,8 @@ async def serve(websocket, path):
                 if not name:
                     await wizard.send_error(websocket, 'Name must not be empty!', 'empty_name')
                 elif not await wizard.join(name, websocket):
-                    await wizard.send_error(websocket, "Name taken!", "name_taken")
+                    await wizard.send_error(websocket,
+                            "Name already taken or game currently running.", "name_taken")
             elif name:
                 await wizard.on_message(name, message)
     finally:
