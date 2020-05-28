@@ -31,9 +31,10 @@ class GameRoom:
         if not self.users:
             self.creator = name
             await socket.send(json.dumps({'type': 'rights', 'status': 'creator'}))
+        # User has to be added here first so it is known for events sent by game.add_player
         self.users[name] = socket
-        allowed = await self.game.add_player(name)
-        if not allowed:
+        if not await self.game.add_player(name):
+            del self.users[name]
             return False
         await self.send_message('%s joined the game!' % name)
         return True
