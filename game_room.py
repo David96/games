@@ -75,7 +75,7 @@ class GameRoom:
         except Exception as e:
             await self.send_error(socket, str(e))
             return
-        if not self.started:
+        if not self.started or self.game.game_over:
             if data['action'] != 'start_game':
                 await self.send_error(socket, 'You can\'t do shit without starting the game first!')
             elif name != self.creator:
