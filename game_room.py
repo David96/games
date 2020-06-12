@@ -50,6 +50,7 @@ class GameRoom:
         # Reset game if all users are gone so newly joined users don't see the old score board
         if not self.users:
             self.game.reset()
+            self.started = False
 
     async def fire_event(self, sender_name, event):
         if not event.per_user or not event.notify_all:
