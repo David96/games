@@ -41,7 +41,7 @@ class GameRoom:
 
     async def leave(self, name):
         del self.users[name]
-        if self.creator == name:
+        if self.creator == name and self.users:
             self.creator = list(self.users.keys())[0]
             await self.users[self.creator].send(json.dumps({'type': 'rights', 'status': 'creator'}))
         await self.game.remove_player(name)
