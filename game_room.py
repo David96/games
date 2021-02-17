@@ -45,6 +45,8 @@ class GameRoom:
             del self.waiting_for[name]
             await self.send(json.dumps({'type': 'management', 'waiting_for':
                 list(self.waiting_for.keys())}))
+            await socket.send(self.game.state_event(name))
+            await socket.send(self.game.player_event(name))
             return
         if not self.users:
             self.creator = name
