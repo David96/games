@@ -14,17 +14,21 @@ class GameRoom:
     def __init__(self, game):
         self.game = game(self)
         self.users = {}
+        self.waiting_for = {}
         self.creator = None
         self.started = False
 
     async def send_error(self, socket, message, error_type=''):
         await socket.send(json.dumps({'type': 'error', 'error': error_type, 'msg': message}))
 
+    async def send(self, content):
+        if self.users:
+            await asyncio.wait([socket.send(content) for socket in self.users.values()])
+
     def send_message(self, message):
         if self.users:
             msg = json.dumps({'type':'message', 'msg': message})
-            asyncio.ensure_future(asyncio.wait(
-                [socket.send(msg) for socket in self.users.values()]))
+            asyncio.ensure_future(self.send(msg))
 
     def call_later(self, delay, callback):
         def run_scheduled():
@@ -32,9 +36,16 @@ class GameRoom:
             asyncio.ensure_future(self.game.send_dirty())
         asyncio.get_event_loop().call_later(delay, run_scheduled)
 
+
     async def join(self, name, socket):
         if name in self.users:
             raise Exception('Name already taken!')
+        if name in self.waiting_for:
+            self.users[name] = self.waiting_for[name]
+            del self.waiting_for[name]
+            await self.send(json.dumps({'type': 'management', 'waiting_for':
+                list(self.waiting_for.keys())}))
+            return
         if not self.users:
             self.creator = name
             await socket.send(json.dumps({'type': 'rights', 'status': 'creator'}))
@@ -48,17 +59,36 @@ class GameRoom:
         await self.game.send_dirty()
 
     async def leave(self, name):
-        del self.users[name]
-        if self.creator == name and self.users:
+        game_running = self.started and not self.game.game_over
+        if game_running:
+            self.waiting_for[name] = self.users[name]
+        await self.remove_player(name, not game_running)
+        if game_running:
+            await self.send(json.dumps({'type': 'management', 'waiting_for':
+                        list(self.waiting_for.keys())}))
+
+    async def remove_player(self, name, for_real):
+        # if name is in users *and* waiting_for we really only want to remove it from
+        # users (see self.leave)
+        if name in self.users:
+            del self.users[name]
+        elif name in self.waiting_for:
+            del self.waiting_for[name]
+        else:
+            raise Exception("Player %s doesn't exist..." % name)
+        if self.creator == name and len(self.users) > 0:
             self.creator = list(self.users.keys())[0]
             await self.users[self.creator].send(json.dumps({'type': 'rights', 'status': 'creator'}))
-        self.game.remove_player(name)
-        await self.game.send_dirty()
-        self.send_message('%s left the game!' % name)
+
+        if for_real:
+            self.game.remove_player(name)
+            await self.game.send_dirty()
+            self.send_message('%s left the game!' % name)
 
         # Reset game if all users are gone so newly joined users don't see the old score board
         if not self.users:
-            self.game.reset()
+            self.waiting_for = {}
+            self.game = self.game.__class__(self)
             self.started = False
 
     async def fire_event(self, sender_name, event):
@@ -77,16 +107,22 @@ class GameRoom:
     async def on_message(self, name, message):
         socket = self.users[name]
         data = json.loads(message)
-        if not self.started or self.game.game_over:
-            if data['action'] != 'start_game':
-                await self.send_error(socket, 'You can\'t do shit without starting the game first!')
-            elif name != self.creator:
+        if (not self.started or self.game.game_over) \
+                and data['action'] != 'start_game':
+            await self.send_error(socket, 'You can\'t do shit without starting the game first!')
+        elif data['action'] == 'start_game':
+            if name != self.creator:
                 await self.send_error(socket, 'That\'s not your job to do!')
             else:
                 self.started = True
                 self.game.start_game()
                 await self.game.send_dirty()
-        elif data['action'] in self.game.ACTIONS:
+        elif data['action'] == 'kick':
+            if name != self.creator:
+                await self.send_error(socket, 'Go fuck yourself you roughless son/daughter of a bitch')
+            else:
+                await self.remove_player(data['user'], True)
+        elif not self.waiting_for and data['action'] in self.game.ACTIONS:
             action = self.game.ACTIONS[data['action']]
             action(name, data)
             await self.game.send_dirty()
