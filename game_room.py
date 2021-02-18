@@ -76,6 +76,8 @@ class GameRoom:
             del self.users[name]
         elif name in self.waiting_for:
             del self.waiting_for[name]
+            await self.send(json.dumps({'type': 'management', 'waiting_for':
+                list(self.waiting_for.keys())}))
         else:
             raise Exception("Player %s doesn't exist..." % name)
         if self.creator == name and len(self.users) > 0:
