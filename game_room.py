@@ -41,7 +41,7 @@ class GameRoom:
         if name in self.users:
             raise Exception('Name already taken!')
         if name in self.waiting_for:
-            self.users[name] = self.waiting_for[name]
+            self.users[name] = socket
             del self.waiting_for[name]
             await self.send(json.dumps({'type': 'management', 'waiting_for':
                 list(self.waiting_for.keys())}))
