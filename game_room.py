@@ -40,22 +40,19 @@ class GameRoom:
     async def join(self, name, socket):
         if name in self.users:
             raise Exception('Name already taken!')
+        # User has to be added here first so it is known for events sent by game.add_player
+        self.users[name] = socket
         if name in self.waiting_for:
-            self.users[name] = socket
             del self.waiting_for[name]
             await self.send(json.dumps({'type': 'management', 'waiting_for':
                 list(self.waiting_for.keys())}))
-            await socket.send(self.game.state_event(name))
-            await socket.send(self.game.player_event(name))
-            return
+            self.game.players_dirty = self.game.state_dirty = True
+        elif not await self.game.add_player(name):
+            del self.users[name]
+            raise Exception('Game already running.')
         if not self.users:
             self.creator = name
             await socket.send(json.dumps({'type': 'rights', 'status': 'creator'}))
-        # User has to be added here first so it is known for events sent by game.add_player
-        self.users[name] = socket
-        if not await self.game.add_player(name):
-            del self.users[name]
-            raise Exception('Game already running.')
         self.send_message('%s joined the game!' % name)
         await socket.send(json.dumps({'type': 'joined'}))
         await self.game.send_dirty()
