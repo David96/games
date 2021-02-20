@@ -108,7 +108,12 @@ class GameRoom:
     async def on_message(self, name, message):
         socket = self.users[name]
         data = json.loads(message)
-        if (not self.started or self.game.game_over) \
+        if data['action'] == 'kick':
+            if name != self.creator:
+                await self.send_error(socket, 'Go fuck yourself you roughless son/daughter of a bitch')
+            else:
+                await self.remove_player(data['user'], True)
+        elif (not self.started or self.game.game_over) \
                 and data['action'] != 'start_game':
             await self.send_error(socket, 'You can\'t do shit without starting the game first!')
         elif data['action'] == 'start_game':
@@ -118,11 +123,6 @@ class GameRoom:
                 self.started = True
                 self.game.start_game()
                 await self.game.send_dirty()
-        elif data['action'] == 'kick':
-            if name != self.creator:
-                await self.send_error(socket, 'Go fuck yourself you roughless son/daughter of a bitch')
-            else:
-                await self.remove_player(data['user'], True)
         elif not self.waiting_for and data['action'] in self.game.ACTIONS:
             action = self.game.ACTIONS[data['action']]
             action(name, data)
