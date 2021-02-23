@@ -50,7 +50,7 @@ class GameRoom:
         elif not await self.game.add_player(name):
             del self.users[name]
             raise Exception('Game already running.')
-        if not self.users:
+        if len(self.users) == 1:
             self.creator = name
             await socket.send(json.dumps({'type': 'rights', 'status': 'creator'}))
         self.send_message('%s joined the game!' % name)
