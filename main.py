@@ -29,7 +29,7 @@ async def serve(websocket, path):
                 traceback.print_exc()
     finally:
         if name:
-            await wizard.leave(name)
+            await wizard.leave(name, websocket)
 
 
 start_server = websockets.serve(serve, "localhost", 6791)

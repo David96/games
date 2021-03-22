@@ -2,6 +2,8 @@ import asyncio
 import json
 import traceback
 
+from collections import defaultdict
+
 class Event:
 
     def __init__(self, event, per_user, notify_all):
@@ -14,6 +16,7 @@ class GameRoom:
     def __init__(self, game):
         self.game = game(self)
         self.users = {}
+        self.spectators = defaultdict(list)
         self.waiting_for = {}
         self.creator = None
         self.started = False
@@ -24,6 +27,9 @@ class GameRoom:
     async def send(self, content):
         if self.users:
             await asyncio.wait([socket.send(content) for socket in self.users.values()])
+            specs = [socket.send(content) for s in self.spectators.values() for socket in s]
+            if specs:
+                await asyncio.wait(specs)
 
     def send_message(self, message):
         if self.users:
@@ -39,7 +45,12 @@ class GameRoom:
 
     async def join(self, name, socket):
         if name in self.users:
-            raise Exception('Name already taken!')
+            self.spectators[name].append(socket)
+            await socket.send(json.dumps({'type': 'joined'}))
+            self.game.players_dirty = self.game.state_dirty = True
+            await self.game.send_dirty()
+            return
+            #raise Exception('Name already taken!')
         # User has to be added here first so it is known for events sent by game.add_player
         self.users[name] = socket
         if name in self.waiting_for:
@@ -57,14 +68,20 @@ class GameRoom:
         await socket.send(json.dumps({'type': 'joined'}))
         await self.game.send_dirty()
 
-    async def leave(self, name):
-        game_running = self.started and not self.game.game_over
-        if game_running:
-            self.waiting_for[name] = self.users[name]
-        await self.remove_player(name, not game_running)
-        if game_running:
-            await self.send(json.dumps({'type': 'management', 'waiting_for':
-                        list(self.waiting_for.keys())}))
+    async def leave(self, name, websocket):
+        if websocket in self.spectators[name]:
+            self.spectators[name].remove(websocket)
+        else:
+            game_running = self.started and not self.game.game_over
+            for spec in self.spectators[name]:
+                await spec.close()
+            self.spectators[name] = list()
+            if game_running:
+                self.waiting_for[name] = self.users[name]
+            await self.remove_player(name, not game_running)
+            if game_running:
+                await self.send(json.dumps({'type': 'management', 'waiting_for':
+                            list(self.waiting_for.keys())}))
 
     async def remove_player(self, name, for_real):
         # if name is in users *and* waiting_for we really only want to remove it from
@@ -101,9 +118,13 @@ class GameRoom:
                     data = event.event(name)
                 if data:
                     await socket.send(data)
+                    if self.spectators[name]:
+                        await asyncio.wait([s.send(data) for s in self.spectators[name]])
         else:
             if data:
                 await self.users[sender_name].send(data)
+                if self.spectators[sender_name]:
+                    await asyncio.wait([socket.send(data) for s in self.spectators[sender_name]])
 
     async def on_message(self, name, message):
         socket = self.users[name]
