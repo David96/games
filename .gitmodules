@@ -9,4 +9,4 @@
 [submodule "wizard"]
 	path = wizard
 	url = https://github.com/David96/wizard.git
-	branch = master
+	branch = ki-hacks
