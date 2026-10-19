@@ -23,7 +23,8 @@ class GameRoom:
 
     async def send(self, content):
         if self.users:
-            await asyncio.wait([socket.send(content) for socket in self.users.values()])
+            for socket in self.users.values():
+                await socket.send(content)
 
     def send_message(self, message):
         if self.users:

@@ -1,6 +1,7 @@
 import asyncio
 import json
 import websockets
+import websockets.asyncio.server
 import traceback
 
 from game_room import GameRoom
@@ -8,7 +9,7 @@ from wizard.wizard import Wizard
 
 wizard = GameRoom(Wizard)
 
-async def serve(websocket, path):
+async def serve(websocket):
     name = None
     try:
         async for message in websocket:
@@ -31,8 +32,9 @@ async def serve(websocket, path):
         if name:
             await wizard.leave(name)
 
+async def main():
+    async with websockets.asyncio.server.serve(serve, "localhost", 6791) as server:
+        await server.serve_forever()
 
-start_server = websockets.serve(serve, "localhost", 6791)
-
-asyncio.get_event_loop().run_until_complete(start_server)
-asyncio.get_event_loop().run_forever()
+if __name__ == "__main__":
+    asyncio.run(main())
