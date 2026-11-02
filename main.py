@@ -3,6 +3,7 @@ import json
 import websockets
 import websockets.asyncio.server
 import traceback
+import sys
 
 from game_room import GameRoom
 from wizard.wizard import Wizard
@@ -33,7 +34,8 @@ async def serve(websocket):
             await wizard.leave(name)
 
 async def main():
-    async with websockets.asyncio.server.serve(serve, "localhost", 6791) as server:
+    port = int(sys.argv[1]) if len(sys.argv) == 2 else 6791
+    async with websockets.asyncio.server.serve(serve, "localhost", port) as server:
         await server.serve_forever()
 
 if __name__ == "__main__":
