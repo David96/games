@@ -1,6 +1,5 @@
 import asyncio
 import json
-import traceback
 
 class Event:
 
@@ -11,8 +10,9 @@ class Event:
 
 class GameRoom:
 
-    def __init__(self, game):
+    def __init__(self, game, room_id):
         self.game = game(self)
+        self.room_id = room_id
         self.users = {}
         self.waiting_for = {}
         self.creator = None
@@ -55,7 +55,7 @@ class GameRoom:
             self.creator = name
             await socket.send(json.dumps({'type': 'rights', 'status': 'creator'}))
         self.send_message('%s joined the game!' % name)
-        await socket.send(json.dumps({'type': 'joined'}))
+        await socket.send(json.dumps({'type': 'joined', 'room_id': self.room_id}))
         await self.game.send_dirty()
 
     async def leave(self, name):
