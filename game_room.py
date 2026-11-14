@@ -62,12 +62,12 @@ class GameRoom:
         game_running = self.started and not self.game.game_over
         if game_running:
             self.waiting_for[name] = self.users[name]
-        await self.remove_player(name, not game_running)
+        await self.remove_player(name, False)
         if game_running:
             await self.send(json.dumps({'type': 'management', 'waiting_for':
                         list(self.waiting_for.keys())}))
 
-    async def remove_player(self, name, for_real):
+    async def remove_player(self, name, is_kick):
         # if name is in users *and* waiting_for we really only want to remove it from
         # users (see self.leave)
         if name in self.users:
@@ -82,7 +82,8 @@ class GameRoom:
             self.creator = list(self.users.keys())[0]
             await self.users[self.creator].send(json.dumps({'type': 'rights', 'status': 'creator'}))
 
-        if for_real:
+        game_running = self.started and not self.game.game_over
+        if is_kick or not game_running:
             self.game.remove_player(name)
             await self.game.send_dirty()
             self.send_message('%s left the game!' % name)
