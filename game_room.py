@@ -1,6 +1,8 @@
 import asyncio
 import json
 
+MAX_USERS=10
+
 class Event:
 
     def __init__(self, event, per_user, notify_all):
@@ -41,6 +43,8 @@ class GameRoom:
     async def join(self, name, socket):
         if name in self.users:
             raise Exception('Name already taken!')
+        if len(self.users) >= MAX_USERS:
+            raise Exception('Too many users!')
         # User has to be added here first so it is known for events sent by game.add_player
         self.users[name] = socket
         if name in self.waiting_for:
