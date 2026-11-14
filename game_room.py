@@ -2,7 +2,7 @@ import asyncio
 import json
 
 MAX_USERS=10
-BOT_JOIN_TIMEOUT=10.0
+BOT_JOIN_TIMEOUT=20.0
 
 class Event:
 
