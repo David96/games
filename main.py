@@ -12,6 +12,9 @@ from bots import BotManager
 
 NDIGITS = 6
 MAXROOMS = 20
+# Time players have to rejoin a room only bots are left in before it is
+# deleted together with its bots
+REJOIN_TIMEOUT = 10.0
 rooms = dict[str, GameRoom]()
 # Set in main() once the port is known; every room gets a reference
 bot_manager = None
@@ -46,13 +49,12 @@ async def join_room(websocket, data):
         await room.join(name, websocket)
 
 async def _delete_room(room_id: str):
-    room = rooms[room_id]
+    room = rooms.pop(room_id, None)
     if room:
         for username, _ in room.users.copy().items():
             await room.remove_player(username, True)
         if room.bots:
             room.bots.stop_room(room_id)
-        rooms.pop(room_id)
 
 def get_user(websocket):
     for room in rooms.values():
@@ -60,6 +62,19 @@ def get_user(websocket):
             if w == websocket:
                 return n, room
     return None, None
+
+def _only_bots_left(room):
+    """Only bots are connected: they never act on their own, so the room
+    is dead unless a human rejoins."""
+    return bool(room.users) and room.bots and \
+        set(room.users) <= set(room.bots.bots_in(room.room_id))
+
+async def _delete_room_if_abandoned(room):
+    # Give players time to rejoin before their bots are terminated with
+    # the room; a human joining in between cancels the deletion
+    await asyncio.sleep(REJOIN_TIMEOUT)
+    if room.room_id in rooms and _only_bots_left(room):
+        await _delete_room(room.room_id)
 
 ACTIONS = {
         'create_room': create_room,
@@ -84,9 +99,12 @@ async def serve(websocket):
         n, room = get_user(websocket)
         if n and room:
             await room.leave(n)
-            # Only drop the room if nobody is expected to rejoin it either
+            # Drop the room if nobody is left in it; if only bots are,
+            # give players some time to rejoin first
             if not room.users and not room.waiting_for:
                 await _delete_room(room.room_id)
+            elif _only_bots_left(room):
+                asyncio.ensure_future(_delete_room_if_abandoned(room))
 
 async def main():
     global bot_manager
