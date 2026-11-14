@@ -8,10 +8,13 @@ import sys
 
 from game_room import GameRoom
 from wizard.wizard import Wizard
+from bots import BotManager
 
 NDIGITS = 6
 MAXROOMS = 20
 rooms = dict[str, GameRoom]()
+# Set in main() once the port is known; every room gets a reference
+bot_manager = None
 
 async def send_error(websocket, message, error_type):
     await websocket.send(json.dumps({'type': 'error', 'error': error_type, 'msg': message}))
@@ -25,7 +28,9 @@ async def create_room(websocket, data):
     if len(rooms) >= MAXROOMS:
         await send_error(websocket, 'Too many rooms exist already!', 'too_many_rooms');
         return
-    rooms[room_id] = GameRoom(Wizard, room_id)
+    room = GameRoom(Wizard, room_id)
+    room.bots = bot_manager
+    rooms[room_id] = room
     data['room'] = room_id
     await join_room(websocket, data)
 
@@ -45,6 +50,8 @@ async def _delete_room(room_id: str):
     if room:
         for username, _ in room.users.copy().items():
             await room.remove_player(username, True)
+        if room.bots:
+            room.bots.stop_room(room_id)
         rooms.pop(room_id)
 
 def get_user(websocket):
@@ -82,9 +89,14 @@ async def serve(websocket):
                 await _delete_room(room.room_id)
 
 async def main():
+    global bot_manager
     port = int(sys.argv[1]) if len(sys.argv) == 2 else 6791
-    async with websockets.asyncio.server.serve(serve, "localhost", port) as server:
-        await server.serve_forever()
+    bot_manager = BotManager(url=f"ws://127.0.0.1:{port}")
+    try:
+        async with websockets.asyncio.server.serve(serve, "localhost", port) as server:
+            await server.serve_forever()
+    finally:
+        bot_manager.shutdown()
 
 if __name__ == "__main__":
     asyncio.run(main())
