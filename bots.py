@@ -41,9 +41,7 @@ DEFAULT_THINK_DELAY = 0.8
 
 # Difficulty is just a checkpoint of the shared policy
 DEFAULT_CHECKPOINTS = {
-    "easy": "training_actor_critic/shared_policy-v2-12000.weights.h5",
-    "normal": "training_actor_critic/shared_policy-v2-24000.weights.h5",
-    "hard": "training_actor_critic/shared_policy-v2-36000.weights.h5",
+    "normal": "training_actor_critic/shared_policy.weights.h5",
 }
 
 # Names humans will see in the player list
@@ -140,7 +138,8 @@ class BotManager:
             "--think-delay", str(self.think_delay),
         ]
         try:
-            proc = subprocess.Popen(command, cwd=self.ai_dir)
+            proc = subprocess.Popen(command, cwd=self.ai_dir, stdout=subprocess.DEVNULL,
+                                    stderr=subprocess.DEVNULL)
         except OSError as error:
             print(f"BotManager: could not start bot {name}: {error}")
             return False
