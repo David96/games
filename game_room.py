@@ -2,6 +2,7 @@ import asyncio
 import json
 
 MAX_USERS=10
+BOT_JOIN_TIMEOUT=10.0
 
 class Event:
 
@@ -19,6 +20,8 @@ class GameRoom:
         self.waiting_for = {}
         self.creator = None
         self.started = False
+        self.bots = None
+        self.pending_bots = []
 
     async def send_error(self, socket, message, error_type=''):
         await socket.send(json.dumps({'type': 'error', 'error': error_type, 'msg': message}))
@@ -43,6 +46,10 @@ class GameRoom:
     async def join(self, name, socket):
         if name in self.users:
             raise Exception('Name already taken!')
+        if self.pending_bots and name not in self.pending_bots:
+            # The room is being filled with bots and the game starts as
+            # soon as they are all in: no more humans until then
+            raise Exception('This room is being filled with bots!')
         if len(self.users) >= MAX_USERS:
             raise Exception('Too many users!')
         # User has to be added here first so it is known for events sent by game.add_player
@@ -55,6 +62,12 @@ class GameRoom:
         elif not await self.game.add_player(name):
             del self.users[name]
             raise Exception('Game already running.')
+        if name in self.pending_bots:
+            self.pending_bots.remove(name)
+            if not self.pending_bots:
+                # The last spawned bot made it in: start right away
+                self.started = True
+                self.game.start_game()
         if len(self.users) == 1:
             self.creator = name
             await socket.send(json.dumps({'type': 'rights', 'status': 'creator'}))
@@ -98,6 +111,44 @@ class GameRoom:
             self.game = self.game.__class__(self)
             self.started = False
 
+    def fill_with_bots(self):
+        """Spawn bots until the game's BOT_FILL_TARGET is reached.
+
+        The game is started automatically once every spawned bot has
+        joined, so no more humans can join in between. Returns False if
+        no bot could be started at all.
+        """
+        target = getattr(self.game, 'BOT_FILL_TARGET', 0)
+        if not target:
+            # Game does not support filling with bots
+            return False
+        missing = target - len(self.users)
+        while missing > 0:
+            name = self.bots.suggest_name(
+                list(self.users) + list(self.game.players) + self.pending_bots)
+            if not self.bots.add(self.room_id, name):
+                break
+            self.pending_bots.append(name)
+            missing -= 1
+        if self.pending_bots:
+            # Start the game when the last bot joins; give up on bots that
+            # never make it so the room is not blocked forever
+            self.call_later(BOT_JOIN_TIMEOUT, self.abandon_pending_bots)
+            return True
+        if missing <= 0:
+            # Room is already full: only start the game
+            self.started = True
+            self.game.start_game()
+            return True
+        return False
+
+    def abandon_pending_bots(self):
+        """Forget about bots that never joined, e.g. because they crashed
+        on startup."""
+        for name in list(self.pending_bots):
+            self.pending_bots.remove(name)
+            self.bots.stop(self.room_id, name)
+
     async def fire_event(self, sender_name, event):
         if not event.per_user or not event.notify_all:
             data = event.event(sender_name)
@@ -119,12 +170,23 @@ class GameRoom:
                 await self.send_error(socket, 'Go fuck yourself you roughless son/daughter of a bitch')
             else:
                 await self.remove_player(data['user'], True)
+        elif data['action'] == 'fill_with_bots':
+            if name != self.creator:
+                await self.send_error(socket, 'That\'s not your job to do!')
+            elif self.started and not self.game.game_over:
+                await self.send_error(socket, 'You can only fill up in the lobby!')
+            elif not self.bots or not self.fill_with_bots():
+                await self.send_error(socket, 'Could not start any bots!')
+            else:
+                await self.game.send_dirty()
         elif (not self.started or self.game.game_over) \
                 and data['action'] != 'start_game':
             await self.send_error(socket, 'You can\'t do shit without starting the game first!')
         elif data['action'] == 'start_game':
             if name != self.creator:
                 await self.send_error(socket, 'That\'s not your job to do!')
+            elif self.pending_bots:
+                await self.send_error(socket, 'The bots are still joining!')
             else:
                 self.started = True
                 self.game.start_game()
