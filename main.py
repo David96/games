@@ -24,18 +24,27 @@ async def send_error(websocket, message, error_type):
 
 async def create_room(websocket, data):
     print("Creating new room")
+    if len(rooms) >= MAXROOMS:
+        await send_error(websocket, 'Too many rooms exist already!', 'too_many_rooms');
+        return
+    if not data.get('name'):
+        await send_error(websocket, 'Name must not be empty!', 'empty_name')
+        return
     while (room_id := ''.join(random.choice(string.ascii_uppercase + string.digits)
                               for _ in range(NDIGITS))) in rooms:
         pass
     print(f"ID: {room_id}")
-    if len(rooms) >= MAXROOMS:
-        await send_error(websocket, 'Too many rooms exist already!', 'too_many_rooms');
-        return
     room = GameRoom(Wizard, room_id)
     room.bots = bot_manager
     rooms[room_id] = room
     data['room'] = room_id
-    await join_room(websocket, data)
+    try:
+        await join_room(websocket, data)
+    except Exception:
+        # Never leak a room that nobody managed to join
+        if not room.users:
+            rooms.pop(room_id, None)
+        raise
 
 async def join_room(websocket, data):
     name = data['name']
@@ -76,6 +85,16 @@ async def _delete_room_if_abandoned(room):
     if room.room_id in rooms and _only_bots_left(room):
         await _delete_room(room.room_id)
 
+async def _cleanup_dead_room(room):
+    """Delete the room if nobody is left in it; if only bots are, give
+    players some time to rejoin first."""
+    if room.room_id not in rooms:
+        return
+    if not room.users and not room.waiting_for:
+        await _delete_room(room.room_id)
+    elif _only_bots_left(room):
+        asyncio.ensure_future(_delete_room_if_abandoned(room))
+
 ACTIONS = {
         'create_room': create_room,
         'join': join_room
@@ -91,6 +110,9 @@ async def serve(websocket):
                     name, room = get_user(websocket)
                     if name and room:
                         await room.on_message(name, message)
+                        # The message may have removed the last user, e.g.
+                        # a kick: clean the room up right away
+                        await _cleanup_dead_room(room)
             except json.JSONDecodeError as e:
                 await send_error(websocket, 'Malformed message! Ignoring.', 'malformed')
             except Exception as e:
@@ -99,12 +121,7 @@ async def serve(websocket):
         n, room = get_user(websocket)
         if n and room:
             await room.leave(n)
-            # Drop the room if nobody is left in it; if only bots are,
-            # give players some time to rejoin first
-            if not room.users and not room.waiting_for:
-                await _delete_room(room.room_id)
-            elif _only_bots_left(room):
-                asyncio.ensure_future(_delete_room_if_abandoned(room))
+            await _cleanup_dead_room(room)
 
 async def main():
     global bot_manager
