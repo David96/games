@@ -118,6 +118,8 @@ class GameRoom:
         joined, so no more humans can join in between. Returns False if
         no bot could be started at all.
         """
+        if self.pending_bots:
+            return False
         target = getattr(self.game, 'BOT_FILL_TARGET', 0)
         if not target:
             # Game does not support filling with bots
