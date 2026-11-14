@@ -33,7 +33,7 @@ import os
 import subprocess
 import sys
 
-DEFAULT_AI_DIR = os.path.expanduser("~/Dokumente/Projekte/wizard-ki-v2")
+DEFAULT_AI_DIR = "../wizard-ki"
 DEFAULT_LAUNCHER = "run_bot.py"
 DEFAULT_URL = "ws://127.0.0.1:6791"
 DEFAULT_MAX_BOTS = 8
@@ -46,8 +46,7 @@ DEFAULT_CHECKPOINTS = {
 
 # Names humans will see in the player list
 BOT_NAMES = [
-    "Merlin", "Morgana", "Radagast", "Circe", "Gandalf", "Morgause",
-    "Prospero", "Nimue", "Alatar", "Pallando", "Talisman", "Yennefer",
+        "BertieBot", "Beep Boop", "NoAI", "Boop Beep", "Wizard.exe", "Botwin"
 ]
 
 
