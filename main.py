@@ -2,11 +2,9 @@ import asyncio
 import json
 import websockets
 import websockets.asyncio.server
-import traceback
 import random
 import string
 import sys
-import uuid
 
 from game_room import GameRoom
 from wizard.wizard import Wizard
@@ -42,10 +40,6 @@ async def join_room(websocket, data):
         print(f"Joining room {room.room_id} as {name}")
         await room.join(name, websocket)
 
-async def delete_room(websocket, data : dict):
-    roomname = data['name']
-    await _delete_room(roomname)
-
 async def _delete_room(room_id: str):
     room = rooms[room_id]
     if room:
@@ -79,7 +73,6 @@ async def serve(websocket):
                 await send_error(websocket, 'Malformed message! Ignoring.', 'malformed')
             except Exception as e:
                 await send_error(websocket, str(e), 'internal_error')
-                traceback.print_exc()
     finally:
         n, room = get_user(websocket)
         if n and room:
