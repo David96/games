@@ -28,8 +28,14 @@ class GameRoom:
 
     async def send(self, content):
         if self.users:
-            for socket in self.users.values():
-                await socket.send(content)
+            # Iterate over a snapshot: the awaited sends yield to the
+            # event loop, where concurrent leaves modify self.users
+            for socket in list(self.users.values()):
+                try:
+                    await socket.send(content)
+                except Exception:
+                    # The socket is closing
+                    pass
 
     def send_message(self, message):
         if self.users:
@@ -155,11 +161,17 @@ class GameRoom:
         if not event.per_user or not event.notify_all:
             data = event.event(sender_name)
         if event.notify_all:
-            for name, socket in self.users.items():
+            # Snapshot: the awaited sends yield, and concurrent leaves
+            # modify self.users in the meantime (see send() above)
+            for name, socket in list(self.users.items()):
                 if event.per_user:
                     data = event.event(name)
                 if data:
-                    await socket.send(data)
+                    try:
+                        await socket.send(data)
+                    except Exception:
+                        # Socket is closing
+                        pass
         else:
             if data:
                 await self.users[sender_name].send(data)
