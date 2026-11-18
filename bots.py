@@ -1,48 +1,59 @@
 """Manage AI players (bots) that join rooms over the game's websocket API.
 
-The bots themselves live in a separate project (wizard-ki-v2) and are
-ordinary websocket clients: they create or join a room, receive state
-events and send actions, exactly like a browser. This module therefore
-does not know anything about the game at all - it only spawns the bot
-launcher process, keeps track of it and terminates it again.
+The bots live in one separate process, the bot daemon (wizard-ki/
+bot_daemon.py): it hosts any number of bots, each with its own websocket
+connection, but all sharing a single loaded policy. The daemon is
+expected to be running already - this module is only its client. It
+keeps track of the bots it ordered and speaks the daemon's control
+protocol, newline-delimited JSON over a persistent TCP connection
+(127.0.0.1, by default on the port one above the game server's):
 
-The launcher (wizard-ki-v2/run_bot.py) is expected to accept:
+    {"cmd": "add", "room": ROOMID, "name": NAME, "delay": SECONDS}  -> {"ok": true}
+    {"cmd": "stop", "name": NAME, "room": ROOMID}                   -> {"ok": true, "stopped": 1}
+    {"cmd": "stop_room", "room": ROOMID}                            -> {"ok": true, "stopped": N}
+    {"cmd": "ping"}                                                 -> {"ok": true, "bots": N}
 
-    python run_bot.py --url ws://localhost:6791 --room ROOMID --name NAME
-                      --checkpoint PATH [--think-delay SECONDS]
-
-and to exit by itself when the room disappears, it gets kicked or the
-server goes away. Restarting a bot after a finished game is the
-launcher's job as well; it simply reconnects and joins the same room.
+Bots are ordinary websocket clients from the daemon's point of view:
+they join a room, receive state events and send actions, exactly like a
+browser. This module therefore does not know anything about the game at
+all - it only orders bots around and stops them again.
 
 Typical use from the server:
 
     manager = BotManager(url=f"ws://127.0.0.1:{port}")
-    manager.add(room_id, "Merlin", "normal")
+    manager.add(room_id, "BertieBot")
     ...
-    manager.stop(room_id, name)   # kicked
+    manager.stop(room_id, name)   # bot never joined, timed out
     manager.stop_room(room_id)    # room deleted
-    manager.shutdown()            # server shutdown
+    manager.shutdown()           # server shutdown
+
+The local registry only tracks what this manager ordered; the daemon
+owns the actual bot lifetimes (a bot ends its game by itself when the
+game is over). Entries therefore outlive their bots, which is harmless
+for the only consumer, the bots-only room check: stale names are never
+part of a room's users anymore. suggest_name() just moves on to the
+next themed name.
+
+The daemon is not started here. On shutdown() the control connection is
+simply closed: the daemon stays put for a while (its linger), so the
+next server instance reconnects to it with the model still loaded.
 
 Configuration can be overridden with the environment variables
-WIZARD_AI_DIR, WIZARD_AI_PYTHON, WIZARD_BOT_URL, WIZARD_BOT_MAX and
-WIZARD_BOT_CHECKPOINTS (difficulty=path,difficulty=path).
+WIZARD_BOT_URL, WIZARD_BOT_MAX, WIZARD_BOT_THINK_DELAY and
+WIZARD_BOT_CONTROL_PORT. The model checkpoint belongs to the daemon;
+per-bot difficulties are not supported.
 """
 
+import json
 import os
-import subprocess
-import sys
+import socket
+import threading
+from urllib.parse import urlparse
 
-DEFAULT_AI_DIR = "../wizard-ki"
-DEFAULT_LAUNCHER = "run_bot.py"
 DEFAULT_URL = "ws://127.0.0.1:6791"
 DEFAULT_MAX_BOTS = 8
 DEFAULT_THINK_DELAY = 0.8
-
-# Difficulty is just a checkpoint of the shared policy
-DEFAULT_CHECKPOINTS = {
-    "normal": "training_actor_critic/shared_policy.weights.h5",
-}
+DEFAULT_CONTROL_HOST = "127.0.0.1"
 
 # Names humans will see in the player list
 BOT_NAMES = [
@@ -50,51 +61,34 @@ BOT_NAMES = [
 ]
 
 
-def _parse_checkpoints(spec):
-    checkpoints = dict(DEFAULT_CHECKPOINTS)
-    for entry in spec.split(","):
-        entry = entry.strip()
-        if not entry or "=" not in entry:
-            continue
-        difficulty, path = entry.split("=", 1)
-        checkpoints[difficulty.strip()] = path.strip()
-    return checkpoints
-
-
 class BotManager:
 
-    def __init__(self, ai_dir=None, python=None, url=None, max_bots=None,
-                 think_delay=None, checkpoints=None):
+    def __init__(self, url=None, max_bots=None, think_delay=None):
         env = os.environ
-        self.ai_dir = ai_dir or env.get("WIZARD_AI_DIR", DEFAULT_AI_DIR)
-        self.python = python or env.get("WIZARD_AI_PYTHON", sys.executable)
         self.url = url or env.get("WIZARD_BOT_URL", DEFAULT_URL)
         self.max_bots = int(env.get("WIZARD_BOT_MAX", max_bots or DEFAULT_MAX_BOTS))
         if think_delay is None:
             think_delay = float(env.get("WIZARD_BOT_THINK_DELAY", DEFAULT_THINK_DELAY))
         self.think_delay = think_delay
-        self.checkpoints = dict(DEFAULT_CHECKPOINTS)
-        if "WIZARD_BOT_CHECKPOINTS" in env:
-            self.checkpoints.update(_parse_checkpoints(env["WIZARD_BOT_CHECKPOINTS"]))
-        if checkpoints:
-            self.checkpoints.update(checkpoints)
-        self.launcher = os.path.join(self.ai_dir, DEFAULT_LAUNCHER)
-        # room id -> {player name: process}
-        self._procs = {}
+        # The daemon defaults to the port one above the game server's
+        game_port = urlparse(self.url).port or 6791
+        self.control_host = DEFAULT_CONTROL_HOST
+        self.control_port = int(env.get("WIZARD_BOT_CONTROL_PORT", game_port + 1))
+        # room id -> set of bot names ordered from the daemon
+        self._bots = {}
+        # The persistent control connection, opened lazily on first use
+        self._control = None
 
     # -- queries ---------------------------------------------------------
 
     def is_bot(self, room_id, name):
-        self._prune()
-        return name in self._procs.get(room_id, {})
+        return name in self._bots.get(room_id, ())
 
     def bots_in(self, room_id):
-        self._prune()
-        return list(self._procs.get(room_id, {}))
+        return list(self._bots.get(room_id, ()))
 
     def count(self):
-        self._prune()
-        return sum(len(procs) for procs in self._procs.values())
+        return sum(len(names) for names in self._bots.values())
 
     def suggest_name(self, taken=()):
         """Pick a themed name that is not in use in the room."""
@@ -109,9 +103,8 @@ class BotManager:
 
     # -- lifecycle -------------------------------------------------------
 
-    def add(self, room_id, name, difficulty="normal"):
-        """Spawn a bot process that joins <room_id> as <name>."""
-        self._prune()
+    def add(self, room_id, name):
+        """Order a bot from the daemon; it joins <room_id> as <name>."""
         if not room_id or not name:
             print("BotManager: room id and name are required")
             return False
@@ -121,78 +114,121 @@ class BotManager:
         if self.count() >= self.max_bots:
             print(f"BotManager: refusing bot, limit of {self.max_bots} reached")
             return False
-        checkpoint = self.checkpoints.get(difficulty)
-        if not checkpoint:
-            print(f"BotManager: unknown difficulty {difficulty!r}")
+        if not self._send({"cmd": "add", "room": room_id, "name": name,
+                           "delay": self.think_delay}):
             return False
-        if not os.path.isfile(self.launcher):
-            print(f"BotManager: bot launcher not found: {self.launcher}")
-            return False
-        command = [
-            self.python, self.launcher,
-            "--url", self.url,
-            "--room", room_id,
-            "--name", name,
-            "--checkpoint", os.path.join(self.ai_dir, checkpoint),
-            "--think-delay", str(self.think_delay),
-        ]
-        try:
-            proc = subprocess.Popen(command, cwd=self.ai_dir, stdout=subprocess.DEVNULL,
-                                    stderr=subprocess.DEVNULL)
-        except OSError as error:
-            print(f"BotManager: could not start bot {name}: {error}")
-            return False
-        self._procs.setdefault(room_id, {})[name] = proc
-        print(f"BotManager: started bot {name} in room {room_id} (pid {proc.pid})")
+        self._bots.setdefault(room_id, set()).add(name)
+        print(f"BotManager: started bot {name} in room {room_id} (daemon)")
         return True
 
-    def stop(self, room_id, name, timeout=3.0):
-        """Terminate one bot, e.g. after it was kicked."""
-        self._prune()
-        proc = self._procs.get(room_id, {}).pop(name, None)
-        if proc is None:
+    def stop(self, room_id, name):
+        """Stop one bot, e.g. when it never joined."""
+        if name not in self._bots.get(room_id, ()):
             return False
-        self._terminate(proc, timeout)
+        self._send({"cmd": "stop", "room": room_id, "name": name})
+        self._forget(room_id, name)
         print(f"BotManager: stopped bot {name} in room {room_id}")
         return True
 
-    def stop_room(self, room_id, timeout=3.0):
-        """Terminate all bots of a room, e.g. when the room is deleted."""
-        self._prune()
-        procs = self._procs.pop(room_id, {})
-        for proc in procs.values():
-            self._terminate(proc, timeout)
-        if procs:
-            print(f"BotManager: stopped {len(procs)} bot(s) in room {room_id}")
-        return len(procs)
+    def stop_room(self, room_id):
+        """Stop all bots of a room, e.g. when the room is deleted."""
+        names = self._bots.pop(room_id, set())
+        if names:
+            self._send({"cmd": "stop_room", "room": room_id})
+            print(f"BotManager: stopped {len(names)} bot(s) in room {room_id}")
+        return len(names)
 
-    def shutdown(self, timeout=3.0):
-        """Terminate every bot (server shutdown)."""
-        for room_id in list(self._procs):
-            self.stop_room(room_id, timeout)
+    def shutdown(self):
+        """Server shutdown: close the control connection. The daemon
+        keeps running (it lingers) so the next server instance can
+        reconnect to it; its bots end with the game server's own
+        connections anyway."""
+        self._disconnect()
 
-    # -- internals -------------------------------------------------------
+    # -- daemon control connection ---------------------------------------
 
-    def _prune(self):
-        """Forget bots whose process already exited on its own."""
-        for room_id, procs in list(self._procs.items()):
-            for name, proc in list(procs.items()):
-                if proc.poll() is not None:
-                    print(f"BotManager: bot {name} in room {room_id} exited "
-                          f"with code {proc.returncode}")
-                    del procs[name]
-            if not procs:
-                del self._procs[room_id]
-
-    @staticmethod
-    def _terminate(proc, timeout):
-        if proc.poll() is not None:
-            return
+    def _send(self, command):
+        """Send one control command, connecting on first use. Returns
+        False if the daemon cannot be reached at all."""
+        control = self._ensure_connected()
+        if control is None:
+            return False
         try:
-            proc.terminate()
-            proc.wait(timeout=timeout)
-        except subprocess.TimeoutExpired:
-            proc.kill()
-            proc.wait()
+            control.sendall((json.dumps(command) + "\n").encode())
+            return True
+        except OSError:
+            print("BotManager: lost the connection to the bot daemon")
+            self._disconnect()
+            return False
+
+    def _ensure_connected(self):
+        """The daemon expects a single persistent control connection;
+        open it on first use and keep it until the daemon goes away."""
+        if self._control is not None:
+            return self._control
+        try:
+            # The timeout only bounds the connect; _read_replies treats
+            # it as idle on an established connection
+            self._control = socket.create_connection(
+                (self.control_host, self.control_port), timeout=2.0)
+        except OSError as error:
+            print(f"BotManager: cannot reach the bot daemon at "
+                  f"{self.control_host}:{self.control_port}: {error}")
+            return None
+        threading.Thread(target=self._read_replies, daemon=True).start()
+        return self._control
+
+    def _read_replies(self):
+        """Drain the daemon's replies on a side thread. Nobody waits for
+        them (the join timeout covers missing bots), but they must not
+        clog the connection; failures are logged for the journal."""
+        control = self._control
+        buffer = b""
+        try:
+            while True:
+                try:
+                    chunk = control.recv(4096)
+                except socket.timeout:
+                    continue    # just idle, the connection is fine
+                if not chunk:
+                    break       # the daemon closed the connection
+                buffer += chunk
+                while b"\n" in buffer:
+                    line, buffer = buffer.split(b"\n", 1)
+                    self._handle_reply(line)
         except OSError:
             pass
+        finally:
+            self._control = None
+            try:
+                control.close()
+            except OSError:
+                pass
+
+    @staticmethod
+    def _handle_reply(line):
+        try:
+            reply = json.loads(line.decode("utf-8"))
+        except ValueError:
+            return
+        if not reply.get("ok"):
+            print(f"BotManager: daemon: {reply}")
+
+    def _disconnect(self):
+        control, self._control = self._control, None
+        if control is not None:
+            try:
+                control.shutdown(socket.SHUT_RDWR)
+            except OSError:
+                pass
+            try:
+                control.close()
+            except OSError:
+                pass
+
+    def _forget(self, room_id, name):
+        names = self._bots.get(room_id)
+        if names is not None:
+            names.discard(name)
+            if not names:
+                del self._bots[room_id]
